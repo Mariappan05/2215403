@@ -1,233 +1,129 @@
-const { logger } = require('../middleware/logger');
-const { body, param, validationResult } = require('express-validator');
-const moment = require('moment');
 const ShortUrl = require('../models/shortUrl');
 const Logger = require('../logger/logger');
 
-class UrlController {
-    constructor(urlService) {
-        this.urlService = urlService;
-        logger.info('URL controller initialized');
+// Validate URL format
+const isValidUrl = (url) => {
+    try {
+        new URL(url);
+        return true;
+    } catch {
+        return false;
     }
+};
 
-    // Validation middleware
-    validateCreateShortUrl() {
-        return [
-            body('url')
-                .isURL()
-                .withMessage('URL must be a valid URL format')
-                .notEmpty()
-                .withMessage('URL is required'),
-            body('validity')
-                .optional()
-                .isInt({ min: 1, max: 1440 }) // Max 24 hours
-                .withMessage('Validity must be an integer between 1 and 1440 minutes'),
-            body('shortcode')
-                .optional()
-                .isLength({ min: 1, max: 20 })
-                .withMessage('Shortcode must be between 1 and 20 characters')
-                .matches(/^[a-zA-Z0-9_-]+$/)
-                .withMessage('Shortcode must contain only alphanumeric characters, hyphens, and underscores')
-        ];
-    }
+const createShortUrl = async (req, res) => {
+    try {
+        const { url, validity, shortcode } = req.body;
+        await Logger.log('info', 'controller', 'Creating new short URL');
 
-    validateShortcode() {
-        return [
-            param('shortcode')
-                .isLength({ min: 1, max: 20 })
-                .withMessage('Shortcode must be between 1 and 20 characters')
-                .matches(/^[a-zA-Z0-9_-]+$/)
-                .withMessage('Shortcode must contain only alphanumeric characters, hyphens, and underscores')
-        ];
-    }
-
-    // Create short URL endpoint
-    async createShortUrl(req, res) {
-        try {
-            await Logger.log('info', 'controller', 'Creating short URL');
-            const { url, validity, shortcode } = req.body;
-            
-            // Validate URL
-            if (!url) {
-                await Logger.log('error', 'controller', 'URL is required');
-                return res.status(400).json({ error: 'URL is required' });
-            }
-
-            // Create short URL
-            const shortUrl = await ShortUrl.create({ 
-                originalUrl: url,
-                validity: validity || 24,
-                shortcode: shortcode
-            });
-
-            await Logger.log('info', 'controller', `Short URL created: ${shortUrl.shortcode}`);
-            res.status(201).json(shortUrl);
-
-        } catch (error) {
-            await Logger.log('error', 'controller', error.message);
-            res.status(500).json({ error: 'Error creating short URL' });
+        // Validate input URL
+        if (!url || !isValidUrl(url)) {
+            await Logger.log('error', 'controller', 'Invalid URL provided');
+            return res.status(400).json({ error: 'Valid URL is required' });
         }
-    }
 
-    // Redirect to original URL endpoint
-    async redirectToOriginalUrl(req, res) {
-        try {
-            // Check validation errors
-            const errors = validationResult(req);
-            if (!errors.isEmpty()) {
-                logger.warn('Validation failed for redirect', { errors: errors.array() });
-                return res.status(400).json({
-                    success: false,
-                    error: 'Validation failed',
-                    details: errors.array()
-                });
-            }
-
-            const { shortcode } = req.params;
-            
-            logger.info('Redirect request received', { shortcode });
-            
-            // Prepare request data for analytics
-            const requestData = {
-                ip: req.ip || req.connection.remoteAddress,
-                userAgent: req.get('User-Agent'),
-                referer: req.get('Referer')
-            };
-
-            // Get original URL and redirect
-            const originalUrl = await this.urlService.redirectToOriginalUrl(shortcode, requestData);
-            
-            logger.info('Redirecting to original URL', { shortcode, originalUrl });
-            
-            res.redirect(originalUrl);
-        } catch (error) {
-            logger.error('Error in redirectToOriginalUrl controller', { 
-                shortcode: req.params.shortcode, 
-                error: error.message 
-            });
-            
-            if (error.message === 'Short URL not found') {
-                return res.status(404).json({
-                    success: false,
-                    error: 'Not found',
-                    message: 'The requested short URL does not exist'
-                });
-            }
-
-            if (error.message === 'Short URL has expired') {
-                return res.status(410).json({
-                    success: false,
-                    error: 'Gone',
-                    message: 'The requested short URL has expired'
-                });
-            }
-
-            res.status(500).json({
-                success: false,
-                error: 'Internal server error',
-                message: 'An error occurred while processing the redirect'
-            });
+        // Validate validity period
+        const validityHours = validity || 24;
+        if (validityHours < 1 || validityHours > 720) {
+            await Logger.log('error', 'controller', 'Invalid validity period');
+            return res.status(400).json({ error: 'Validity must be between 1 and 720 hours' });
         }
-    }
 
-    // Get short URL statistics endpoint
-    async getShortUrlStats(req, res) {
-        try {
-            // Check validation errors
-            const errors = validationResult(req);
-            if (!errors.isEmpty()) {
-                logger.warn('Validation failed for get stats', { errors: errors.array() });
-                return res.status(400).json({
-                    success: false,
-                    error: 'Validation failed',
-                    details: errors.array()
-                });
-            }
-
-            const { shortcode } = req.params;
-            
-            logger.info('Statistics request received', { shortcode });
-            
-            // Get statistics
-            const stats = await this.urlService.getShortUrlStats(shortcode);
-            
-            logger.info('Statistics retrieved successfully', { shortcode });
-            
-            res.json(stats);
-        } catch (error) {
-            logger.error('Error in getShortUrlStats controller', { 
-                shortcode: req.params.shortcode, 
-                error: error.message 
-            });
-            
-            if (error.message === 'Short URL not found') {
-                return res.status(404).json({
-                    success: false,
-                    error: 'Not found',
-                    message: 'The requested short URL does not exist'
-                });
-            }
-
-            if (error.message === 'Short URL has expired') {
-                return res.status(410).json({
-                    success: false,
-                    error: 'Gone',
-                    message: 'The requested short URL has expired'
-                });
-            }
-
-            res.status(500).json({
-                success: false,
-                error: 'Internal server error',
-                message: 'An error occurred while retrieving statistics'
-            });
+        // Generate or validate shortcode
+        const urlCode = shortcode || Math.random().toString(36).substring(2, 8);
+        if (!/^[a-zA-Z0-9]{4,}$/.test(urlCode)) {
+            await Logger.log('error', 'controller', 'Invalid shortcode format');
+            return res.status(400).json({ error: 'Shortcode must be alphanumeric and at least 4 characters' });
         }
-    }
 
-    // Health check endpoint
-    async healthCheck(req, res) {
-        try {
-            logger.debug('Health check request received');
-            
-            const stats = await this.urlService.getServiceStats();
-            
-            const healthStatus = {
-                status: 'healthy',
-                timestamp: new Date().toISOString(),
-                uptime: process.uptime(),
-                memory: process.memoryUsage(),
-                stats
-            };
-            
-            logger.debug('Health check completed', { status: healthStatus.status });
-            
-            res.json(healthStatus);
-        } catch (error) {
-            logger.error('Error in health check', { error: error.message });
-            
-            res.status(503).json({
-                status: 'unhealthy',
-                timestamp: new Date().toISOString(),
-                error: error.message
-            });
-        }
-    }
-
-    // Error handler middleware
-    errorHandler(err, req, res, next) {
-        logger.error('Unhandled error in controller', { 
-            error: err.message, 
-            stack: err.stack,
-            url: req.url,
-            method: req.method
+        const shortUrl = new ShortUrl({
+            originalUrl: url,
+            shortcode: urlCode,
+            validity: validityHours,
+            createdAt: new Date()
         });
 
-        res.status(500).json({
-            success: false,
-            error: 'Internal server error',
-            message: 'An unexpected error occurred'
+        const saved = await shortUrl.save();
+        await Logger.log('info', 'controller', `URL created with code: ${urlCode}`);
+        
+        return res.status(201).json({
+            originalUrl: saved.originalUrl,
+            shortUrl: `${req.protocol}://${req.get('host')}/${urlCode}`,
+            shortcode: saved.shortcode,
+            validity: saved.validity,
+            expiresAt: new Date(saved.createdAt.getTime() + saved.validity * 60 * 60 * 1000)
         });
-    }
-}
 
-module.exports = UrlController;
+    } catch (error) {
+        if (error.code === 11000) {
+            await Logger.log('error', 'controller', 'Duplicate shortcode');
+            return res.status(409).json({ error: 'Shortcode already exists' });
+        }
+        await Logger.log('error', 'controller', error.message);
+        return res.status(500).json({ error: 'Error creating short URL' });
+    }
+};
+
+const redirectToUrl = async (req, res) => {
+    try {
+        const { shortcode } = req.params;
+        const shortUrl = await ShortUrl.findOne({ shortcode });
+
+        if (!shortUrl) {
+            await Logger.log('error', 'controller', 'URL not found');
+            return res.status(404).json({ error: 'URL not found' });
+        }
+
+        // Check expiration
+        const expirationTime = new Date(shortUrl.createdAt.getTime() + shortUrl.validity * 60 * 60 * 1000);
+        if (expirationTime < new Date()) {
+            await Logger.log('error', 'controller', 'URL expired');
+            return res.status(410).json({ error: 'URL has expired' });
+        }
+
+        // Update click count
+        shortUrl.clicks += 1;
+        await shortUrl.save();
+        
+        await Logger.log('info', 'controller', `Redirecting ${shortcode}`);
+        return res.redirect(shortUrl.originalUrl);
+
+    } catch (error) {
+        await Logger.log('error', 'controller', error.message);
+        return res.status(500).json({ error: 'Error redirecting to URL' });
+    }
+};
+
+const getUrlStats = async (req, res) => {
+    try {
+        const { shortcode } = req.params;
+        const shortUrl = await ShortUrl.findOne({ shortcode });
+
+        if (!shortUrl) {
+            await Logger.log('error', 'controller', 'URL not found');
+            return res.status(404).json({ error: 'URL not found' });
+        }
+
+        const expirationTime = new Date(shortUrl.createdAt.getTime() + shortUrl.validity * 60 * 60 * 1000);
+        await Logger.log('info', 'controller', `Stats retrieved for ${shortcode}`);
+
+        return res.status(200).json({
+            originalUrl: shortUrl.originalUrl,
+            shortcode: shortUrl.shortcode,
+            clicks: shortUrl.clicks,
+            createdAt: shortUrl.createdAt,
+            expiresAt: expirationTime,
+            isExpired: expirationTime < new Date()
+        });
+
+    } catch (error) {
+        await Logger.log('error', 'controller', error.message);
+        return res.status(500).json({ error: 'Error retrieving URL stats' });
+    }
+};
+
+module.exports = {
+    createShortUrl,
+    redirectToUrl,
+    getUrlStats
+};
