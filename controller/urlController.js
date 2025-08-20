@@ -1,6 +1,8 @@
 const { logger } = require('../middleware/logger');
 const { body, param, validationResult } = require('express-validator');
 const moment = require('moment');
+const ShortUrl = require('../models/shortUrl');
+const Logger = require('../logger/logger');
 
 class UrlController {
     constructor(urlService) {
@@ -42,66 +44,28 @@ class UrlController {
     // Create short URL endpoint
     async createShortUrl(req, res) {
         try {
-            // Check validation errors
-            const errors = validationResult(req);
-            if (!errors.isEmpty()) {
-                logger.warn('Validation failed for create short URL', { errors: errors.array() });
-                return res.status(400).json({
-                    success: false,
-                    error: 'Validation failed',
-                    details: errors.array()
-                });
-            }
-
+            await Logger.log('info', 'controller', 'Creating short URL');
             const { url, validity, shortcode } = req.body;
             
-            logger.info('Creating short URL request received', { url, validity, shortcode });
-            
+            // Validate URL
+            if (!url) {
+                await Logger.log('error', 'controller', 'URL is required');
+                return res.status(400).json({ error: 'URL is required' });
+            }
+
             // Create short URL
-            const shortUrl = await this.urlService.createShortUrl({
-                url,
-                validity,
-                shortcode
+            const shortUrl = await ShortUrl.create({ 
+                originalUrl: url,
+                validity: validity || 24,
+                shortcode: shortcode
             });
 
-            // Build response
-            const shortLink = `${req.protocol}://${req.get('host')}/${shortUrl.shortcode}`;
-            const response = {
-                shortLink,
-                expiry: shortUrl.expiresAt.toISOString()
-            };
+            await Logger.log('info', 'controller', `Short URL created: ${shortUrl.shortcode}`);
+            res.status(201).json(shortUrl);
 
-            logger.info('Short URL created successfully', { 
-                shortcode: shortUrl.shortcode, 
-                shortLink,
-                expiry: response.expiry 
-            });
-
-            res.status(201).json(response);
         } catch (error) {
-            logger.error('Error in createShortUrl controller', { error: error.message });
-            
-            if (error.message === 'Custom shortcode already exists') {
-                return res.status(409).json({
-                    success: false,
-                    error: 'Shortcode already exists',
-                    message: 'The requested custom shortcode is already in use'
-                });
-            }
-
-            if (error.message === 'Invalid URL format') {
-                return res.status(400).json({
-                    success: false,
-                    error: 'Invalid URL format',
-                    message: 'Please provide a valid URL'
-                });
-            }
-
-            res.status(500).json({
-                success: false,
-                error: 'Internal server error',
-                message: 'An error occurred while creating the short URL'
-            });
+            await Logger.log('error', 'controller', error.message);
+            res.status(500).json({ error: 'Error creating short URL' });
         }
     }
 
